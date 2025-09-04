@@ -6,7 +6,10 @@ const bodyParser = require('body-parser');
 const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 3000;
-
+// ✅✅✅ ДОБАВЬТЕ ЭТИ 3 СТРОКИ ДЛЯ CORS ✅✅✅
+const cors = require('cors'); // 1. Импортируем пакет
+app.use(cors());              // 2. Разрешаем запросы со всех доменов
+// app.use(cors({ origin: 'https://ваш-сайт.ru' })); // Или так, для конкретного домена
 // Middleware
 app.use(bodyParser.json());
 app.use(express.static('public')); // для статических файлов
