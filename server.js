@@ -1,358 +1,278 @@
-require('dotenv').config();
-
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
-const bodyParser = require('body-parser');
-const cron = require('node-cron');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-// ✅✅✅ ДОБАВЬТЕ ЭТИ 3 СТРОКИ ДЛЯ CORS ✅✅✅
-const cors = require('cors'); // 1. Импортируем пакет
-app.use(cors());              // 2. Разрешаем запросы со всех доменов
-// app.use(cors({ origin: 'https://ваш-сайт.ru' })); // Или так, для конкретного домена
-// Middleware
-app.use(bodyParser.json());
-app.use(express.static('public')); // для статических файлов
 
-// Ваши данные Telegram из .env файла
+// Telegram bot configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8078550568:AAEtW8cTX3Rw_x1rUIJTg9Q46pntJVfOhuw';
-const TELEGRAM_GROUP_ID = process.env.TELEGRAM_GROUP_ID || '-4795204209';
-const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-4795204209';
 
-// Проверка, что переменные окружения загружены
-if (!TELEGRAM_BOT_TOKEN) {
-    console.error('Ошибка: TELEGRAM_BOT_TOKEN не установлен в .env файле');
-    process.exit(1);
-}
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-console.log('Server starting...');
-console.log('Telegram Bot Token:', TELEGRAM_BOT_TOKEN);
-console.log('Telegram Group ID:', TELEGRAM_GROUP_ID);
+// In-memory storage for messages
+const messageStorage = new Map();
 
-// Хранилище для сообщений (в продакшене используйте базу данных)
-let messages = {};
-let userSessions = {};
-
-// Функция для отправки сообщений в Telegram
-async function sendTelegramMessage(chatId, text, parse_mode = 'HTML') {
-    try {
-        const response = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
-            chat_id: chatId,
-            text: text,
-            parse_mode: parse_mode,
-            disable_web_page_preview: true
-        });
-        return response.data;
-    } catch (error) {
-        console.error('Ошибка отправки сообщения в Telegram:', error.response?.data || error.message);
-        throw error;
-    }
-}
-
-// Корневой route для проверки работы сервера
-app.get('/', (req, res) => {
+// Health check endpoint
+app.get('/api/status', (req, res) => {
     res.json({ 
         status: 'OK', 
-        message: 'RustorgUO Support Server is running',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        server: 'Rustorguo Support Server',
+        users: messageStorage.size
     });
 });
 
-// Вебхук для получения сообщений от Telegram
-app.post('/webhook', async (req, res) => {
+// Get message history for user
+app.get('/api/messages/:userId', (req, res) => {
     try {
-        console.log('Webhook received:', JSON.stringify(req.body, null, 2));
+        const userId = req.params.userId;
         
-        const { message } = req.body;
-        
-        if (message && message.text) {
-            const chatId = message.chat.id;
-            const text = message.text;
-            const userId = message.from.id;
-            const userName = message.from.first_name + (message.from.last_name ? ' ' + message.from.last_name : '');
-            
-            console.log(`Сообщение от ${userName} (${userId}): ${text}`);
-            
-            // Если сообщение из группы поддержки
-            if (chatId.toString() === TELEGRAM_GROUP_ID.replace('-100', '-')) {
-                // Проверяем, является ли сообщение ответом на вопрос пользователя
-                if (message.reply_to_message && message.reply_to_message.text) {
-                    const originalMessage = message.reply_to_message.text;
-                    // Ищем userId в сообщении (мы его добавляем при пересылке)
-                    const userIdMatch = originalMessage.match(/User ID: (\S+)/);
-                    
-                    if (userIdMatch && userIdMatch[1]) {
-                        const targetUserId = userIdMatch[1];
-                        
-                        // Форматируем ответ
-                        const responseText = `👨‍💼 <b>Поддержка RUSTORGUO:</b>\n${text}`;
-                        
-                        // Отправляем ответ пользователю
-                        try {
-                            await sendTelegramMessage(targetUserId, responseText);
-                            
-                            // Сохраняем в историю
-                            if (!messages[targetUserId]) {
-                                messages[targetUserId] = [];
-                            }
-                            messages[targetUserId].push({
-                                text: text,
-                                timestamp: new Date(),
-                                from: 'support',
-                                supportAgent: userName
-                            });
-                            
-                            console.log(`Ответ отправлен пользователю ${targetUserId}`);
-                            
-                            // Отправляем подтверждение в группу
-                            await sendTelegramMessage(TELEGRAM_GROUP_ID, `✅ Ответ отправлен пользователю ${targetUserId}`);
-                            
-                        } catch (error) {
-                            console.error('Ошибка отправки ответа пользователю:', error);
-                            await sendTelegramMessage(TELEGRAM_GROUP_ID, `❌ Ошибка отправки ответа: ${error.message}`);
-                        }
-                    }
-                }
-            }
-        }
-        
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('Ошибка в webhook:', error);
-        res.status(500).send('Internal Server Error');
-    }
-});
-
-// API для отправки сообщений от пользователей сайта
-app.post('/api/send-message', async (req, res) => {
-    try {
-        const { userId, userName, userEmail, text, pageUrl } = req.body;
-        
-        // Валидация
-        if (!text || text.trim().length === 0) {
+        if (!userId) {
             return res.status(400).json({ 
-                success: false, 
-                error: 'Текст сообщения не может быть пустым' 
+                success: false,
+                error: 'User ID is required' 
             });
         }
-        
-        // Генерируем уникальный ID сессии, если не предоставлен
-        const sessionId = userId || `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        // Сохраняем сообщение
-        if (!messages[sessionId]) {
-            messages[sessionId] = [];
-        }
-        messages[sessionId].push({
-            text: text,
-            timestamp: new Date(),
-            from: 'user',
-            userName: userName || 'Гость',
-            userEmail: userEmail || 'Не указан'
-        });
-        
-        // Формируем сообщение для Telegram
-        const telegramMessage = `
-📩 <b>НОВОЕ СООБЩЕНИЕ ИЗ ЧАТА RUSTORGUO</b>
-┌─ <b>Пользователь:</b> ${userName || 'Гость'}
-├─ <b>Email:</b> ${userEmail || 'Не указан'}
-├─ <b>User ID:</b> <code>${sessionId}</code>
-├─ <b>Страница:</b> ${pageUrl || 'Не указана'}
-├─ <b>Время:</b> ${new Date().toLocaleString('ru-RU')}
-└─ <b>Сообщение:</b> 
-${text}
-        `.trim();
-        
-        // Отправляем сообщение в группу Telegram
-        try {
-            await sendTelegramMessage(TELEGRAM_GROUP_ID, telegramMessage);
-            
-            // Сохраняем сессию пользователя
-            userSessions[sessionId] = {
-                userName: userName || 'Гость',
-                userEmail: userEmail || 'Не указан',
-                lastActivity: new Date()
-            };
-            
-            res.json({ 
-                success: true, 
-                sessionId: sessionId,
-                message: 'Сообщение отправлено в поддержку' 
-            });
-            
-        } catch (error) {
-            console.error('Ошибка отправки в Telegram:', error);
-            res.status(500).json({ 
-                success: false, 
-                error: 'Ошибка отправки сообщения в поддержку' 
-            });
-        }
-        
-    } catch (error) {
-        console.error('Ошибка обработки сообщения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Внутренняя ошибка сервера' 
-        });
-    }
-});
 
-// API для получения истории сообщений
-app.get('/api/messages/:sessionId', (req, res) => {
-    try {
-        const sessionId = req.params.sessionId;
-        const userMessages = messages[sessionId] || [];
-        
-        // Фильтруем только последние 50 сообщений
-        const recentMessages = userMessages.slice(-50);
+        const userMessages = messageStorage.get(userId) || [];
         
         res.json({
             success: true,
-            messages: recentMessages,
-            count: recentMessages.length
+            messages: userMessages
         });
     } catch (error) {
-        console.error('Ошибка получения сообщений:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка получения сообщений' 
+        console.error('Error getting messages:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
         });
     }
 });
 
-// API для проверки статуса сервера
-app.get('/api/status', (req, res) => {
-    res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        serverTime: new Date().toLocaleString('ru-RU'),
-        messagesCount: Object.keys(messages).length,
-        usersCount: Object.keys(userSessions).length
-    });
+// Send message to Telegram
+app.post('/api/send-message', async (req, res) => {
+    try {
+        const { userId, userName, userEmail, text, pageUrl } = req.body;
+
+        // Validate required fields
+        if (!text || !userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Message text and user ID are required'
+            });
+        }
+
+        // Format message for Telegram
+        const telegramMessage = `
+📨 Новое сообщение от пользователя
+
+👤 Имя: ${userName || 'Гость'}
+📧 Email: ${userEmail || 'Не указан'}
+💬 Сообщение: ${text}
+🌐 Страница: ${pageUrl || 'Неизвестно'}
+🆔 User ID: ${userId}
+⏰ Время: ${new Date().toLocaleString('ru-RU')}
+
+💡 Чтобы ответить, напишите:
+Ответ для ${userId}: Ваш текст ответа
+        `.trim();
+
+        // Send to Telegram
+        const telegramResponse = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            {
+                chat_id: TELEGRAM_CHAT_ID,
+                text: telegramMessage,
+                parse_mode: 'HTML'
+            },
+            { timeout: 10000 }
+        );
+
+        // Store message in memory
+        if (!messageStorage.has(userId)) {
+            messageStorage.set(userId, []);
+        }
+
+        const userMessages = messageStorage.get(userId);
+        userMessages.push({
+            text: text,
+            from: 'user',
+            timestamp: new Date().toISOString(),
+            displayed: true
+        });
+
+        console.log('Message sent to Telegram for user:', userId);
+
+        res.json({
+            success: true,
+            message: 'Message sent successfully'
+        });
+
+    } catch (error) {
+        console.error('Error sending message to Telegram:', error.message);
+        
+        res.status(500).json({
+            success: false,
+            error: 'Failed to send message to Telegram',
+            details: error.message
+        });
+    }
 });
 
-// Установка вебхука
-app.post('/set-webhook', async (req, res) => {
+// Webhook для получения сообщений от Telegram бота
+app.post('/api/telegram-webhook', async (req, res) => {
     try {
-        const webhookUrl = process.env.RENDER_EXTERNAL_URL ? 
-            `${process.env.RENDER_EXTERNAL_URL}/webhook` : 
-            req.body.webhookUrl;
+        const update = req.body;
+        console.log('Telegram webhook received:', JSON.stringify(update, null, 2));
+
+        // Проверяем что это текстовое сообщение
+        if (update.message && update.message.text) {
+            const messageText = update.message.text;
+            const chatId = update.message.chat.id;
             
-        if (!webhookUrl) {
-            return res.status(400).json({ error: 'URL вебхука не указан' });
+            // Игнорируем сообщения не из нужного чата
+            const targetChatId = TELEGRAM_CHAT_ID.replace('-', '');
+            if (chatId.toString() !== targetChatId) {
+                console.log('Ignoring message from chat:', chatId);
+                return res.status(200).send('OK');
+            }
+
+            console.log('Processing message from admin chat:', messageText);
+
+            // Ищем шаблон ответа: "Ответ для user_123: текст ответа"
+            const responseMatch = messageText.match(/Ответ для (user_[^:]+):\s*(.*)/i);
+            
+            if (responseMatch) {
+                const userId = responseMatch[1];
+                const responseText = responseMatch[2].trim();
+                
+                if (!responseText) {
+                    console.log('Empty response text');
+                    return res.status(200).send('OK');
+                }
+
+                console.log('Saving response for user:', userId, 'Text:', responseText);
+
+                // Сохраняем ответ в историю пользователя
+                if (!messageStorage.has(userId)) {
+                    messageStorage.set(userId, []);
+                }
+                
+                const userMessages = messageStorage.get(userId);
+                userMessages.push({
+                    text: responseText,
+                    from: 'bot',
+                    timestamp: new Date().toISOString(),
+                    fromTelegram: true,
+                    displayed: false // Помечаем как непрочитанное
+                });
+
+                // Отправляем подтверждение в Telegram
+                await axios.post(
+                    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+                    {
+                        chat_id: TELEGRAM_CHAT_ID,
+                        text: `✅ Ответ сохранен для пользователя ${userId}`,
+                        parse_mode: 'HTML'
+                    }
+                );
+
+                console.log('Response saved successfully for user:', userId);
+            }
         }
-        
-        console.log('Setting webhook to:', webhookUrl);
-        
-        const response = await axios.post(
-            `${TELEGRAM_API_URL}/setWebhook`, 
-            { url: webhookUrl }
-        );
-        
-        res.json(response.data);
+
+        res.status(200).send('OK');
     } catch (error) {
-        console.error('Ошибка настройки вебхука:', error);
-        res.status(500).json({ 
-            error: 'Ошибка настройки вебхука',
-            details: error.response?.data || error.message 
-        });
+        console.error('Error in Telegram webhook:', error.message);
+        res.status(200).send('OK'); // Всегда отвечаем OK Telegramу
     }
 });
 
-// Удаление вебхука
-app.post('/delete-webhook', async (req, res) => {
+// Endpoint для проверки непрочитанных сообщений
+app.get('/api/unread-messages/:userId', (req, res) => {
     try {
-        const response = await axios.post(
-            `${TELEGRAM_API_URL}/deleteWebhook`
-        );
-        res.json(response.data);
-    } catch (error) {
-        console.error('Ошибка удаления вебхука:', error);
-        res.status(500).json({ 
-            error: 'Ошибка удаления вебхука',
-            details: error.response?.data || error.message 
-        });
-    }
-});
-
-// Получение информации о вебхуке
-app.get('/get-webhook-info', async (req, res) => {
-    try {
-        const response = await axios.get(
-            `${TELEGRAM_API_URL}/getWebhookInfo`
-        );
-        res.json(response.data);
-    } catch (error) {
-        console.error('Ошибка получения информации о вебхуке:', error);
-        res.status(500).json({ 
-            error: 'Ошибка получения информации о вебхуке',
-            details: error.response?.data || error.message 
-        });
-    }
-});
-
-// Получение информации о боте
-app.get('/get-bot-info', async (req, res) => {
-    try {
-        const response = await axios.get(
-            `${TELEGRAM_API_URL}/getMe`
-        );
-        res.json(response.data);
-    } catch (error) {
-        console.error('Ошибка получения информации о боте:', error);
-        res.status(500).json({ 
-            error: 'Ошибка получения информации о боте',
-            details: error.response?.data || error.message 
-        });
-    }
-});
-
-// Очистка старых сессий (каждый день в 3:00)
-cron.schedule('0 3 * * *', () => {
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-    
-    let clearedCount = 0;
-    
-    for (const sessionId in userSessions) {
-        if (userSessions[sessionId].lastActivity < thirtyDaysAgo) {
-            delete userSessions[sessionId];
-            delete messages[sessionId];
-            clearedCount++;
+        const userId = req.params.userId;
+        
+        if (!userId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'User ID is required' 
+            });
         }
+
+        const userMessages = messageStorage.get(userId) || [];
+        const unreadMessages = userMessages.filter(msg => 
+            msg.from === 'bot' && !msg.displayed
+        );
+
+        // Помечаем сообщения как прочитанные
+        unreadMessages.forEach(msg => {
+            msg.displayed = true;
+        });
+
+        res.json({
+            success: true,
+            unreadCount: unreadMessages.length,
+            messages: unreadMessages
+        });
+    } catch (error) {
+        console.error('Error getting unread messages:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
     }
-    
-    console.log(`Очищено ${clearedCount} старых сессий`);
 });
 
-// Обработка ошибок
+// Endpoint для получения информации о пользователе
+app.get('/api/user-info/:userId', (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const userMessages = messageStorage.get(userId) || [];
+        
+        res.json({
+            success: true,
+            userId: userId,
+            messageCount: userMessages.length,
+            lastActivity: userMessages.length > 0 
+                ? userMessages[userMessages.length - 1].timestamp 
+                : null
+        });
+    } catch (error) {
+        console.error('Error getting user info:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
+    }
+});
+
+// Error handling middleware
 app.use((error, req, res, next) => {
     console.error('Unhandled error:', error);
-    res.status(500).json({ 
-        success: false, 
-        error: 'Внутренняя ошибка сервера' 
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error'
     });
 });
 
-// Обработка 404
-app.use((req, res) => {
-    res.status(404).json({ 
-        success: false, 
-        error: 'Endpoint не найден' 
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Endpoint not found'
     });
 });
 
-// Старт сервера
 app.listen(PORT, () => {
-    console.log(`✅ Сервер запущен на порту ${PORT}`);
-    console.log(`📍 Локальный URL: http://localhost:${PORT}`);
-    console.log(`🤖 Telegram Bot: ${TELEGRAM_BOT_TOKEN}`);
-    console.log(`👥 Telegram Group: ${TELEGRAM_GROUP_ID}`);
-    console.log('──────────────────────────────────────');
+    console.log(`🚀 Server is running on port ${PORT}`);
+    console.log(`📡 Health check: http://localhost:${PORT}/api/status`);
+    console.log(`🤖 Telegram webhook: http://localhost:${PORT}/api/telegram-webhook`);
+    console.log(`💬 Message storage: ${messageStorage.size} users`);
 });
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n🛑 Остановка сервера...');
-    process.exit(0);
-});
+module.exports = app;
