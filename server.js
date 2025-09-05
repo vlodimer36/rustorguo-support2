@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const path = require('path'); // ← ДОБАВЬ ЭТУ СТРОЧКУ
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 // Telegram bot configuration
 const TELEGRAM_BOT_TOKEN = '8078550568:AAEtW8cTX3Rw_x1rUIJTg9Q46pntJVfOhuw';
 const TELEGRAM_CHAT_ID = '-4795204209';
+const SERVER_URL = 'https://rustorguo-support.onrender.com';
 
 // Middleware
 app.use(cors());
@@ -23,7 +24,8 @@ app.get('/api/status', (req, res) => {
         status: 'OK', 
         timestamp: new Date().toISOString(),
         server: 'Rustorguo Support Server',
-        users: messageStorage.size
+        users: messageStorage.size,
+        version: '2.0'
     });
 });
 
@@ -241,6 +243,8 @@ app.get('/api/users', (req, res) => {
 // Telegram webhook for direct replies
 app.post('/api/telegram-webhook', async (req, res) => {
     try {
+        console.log('📨 Received Telegram webhook');
+        
         const update = req.body;
         
         if (update.message && update.message.text) {
@@ -248,10 +252,15 @@ app.post('/api/telegram-webhook', async (req, res) => {
             const chatId = update.message.chat.id.toString();
             const targetChatId = TELEGRAM_CHAT_ID.replace('-', '');
 
+            console.log('💬 Message:', messageText);
+            console.log('👥 Chat ID:', chatId, 'Target:', targetChatId);
+
             if (chatId === targetChatId && messageText.startsWith('/reply_')) {
                 const parts = messageText.split(' ');
                 const userId = parts[0].replace('/reply_', '');
-                const replyText = parts.slice(1).join(' ');
+                const replyText = parts.slice(1).join(' ').trim();
+
+                console.log('🎯 Parsed - User:', userId, 'Text:', replyText);
 
                 if (userId && replyText) {
                     // Save the reply
@@ -267,7 +276,7 @@ app.post('/api/telegram-webhook', async (req, res) => {
                         displayed: false
                     });
 
-                    console.log('Reply from Telegram saved for user:', userId);
+                    console.log('💾 Reply saved for user:', userId);
 
                     // Send confirmation
                     await axios.post(
@@ -278,40 +287,17 @@ app.post('/api/telegram-webhook', async (req, res) => {
                             parse_mode: 'HTML'
                         }
                     );
+
+                    console.log('📤 Confirmation sent to Telegram');
                 }
             }
         }
 
         res.status(200).send('OK');
     } catch (error) {
-        console.error('Error in webhook:', error);
+        console.error('❌ Error in webhook:', error.message);
         res.status(200).send('OK');
     }
-});
-
-// Serve static files (admin.html) ← ДОБАВЬ ЭТОТ БЛОК
-app.use(express.static(path.join(__dirname)));
-
-// Serve admin.html from root ← ДОБАВЬ ЭТОТ БЛОК
-app.get('/admin', (req, res) => {
-    res.sendFile(path.join(__dirname, 'admin.html'));
-});
-
-// Error handling
-app.use((error, req, res, next) => {
-    console.error('Error:', error);
-    res.status(500).json({ 
-        success: false,
-        error: 'Internal server error' 
-    });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-    res.status(404).json({
-        success: false,
-        error: 'Endpoint not found'
-    });
 });
 
 // Setup webhook endpoint - для ручной настройки webhook
@@ -322,7 +308,7 @@ app.get('/setup-webhook', async (req, res) => {
         const response = await axios.post(
             `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook`,
             {
-                url: `https://rustorguo-support.onrender.com/api/telegram-webhook`,
+                url: `${SERVER_URL}/api/telegram-webhook`,
                 allowed_updates: ['message', 'edited_message'],
                 drop_pending_updates: true
             },
@@ -410,33 +396,37 @@ app.get('/test-webhook', async (req, res) => {
     }
 });
 
-// Debug endpoint для отладки webhook
-app.post('/api/debug-webhook', (req, res) => {
-    try {
-        console.log('🐛 DEBUG Webhook received:');
-        console.log('Headers:', req.headers);
-        console.log('Body:', JSON.stringify(req.body, null, 2));
-        console.log('Timestamp:', new Date().toISOString());
-        
-        res.json({
-            success: true,
-            received: true,
-            body: req.body,
-            headers: req.headers
-        });
-        
-    } catch (error) {
-        console.error('Debug error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
+// Serve static files (admin.html)
+app.use(express.static(path.join(__dirname)));
+
+// Serve admin.html from root
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
 });
+
+// Error handling
+app.use((error, req, res, next) => {
+    console.error('Error:', error);
+    res.status(500).json({ 
+        success: false,
+        error: 'Internal server error' 
+    });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Endpoint not found'
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📡 Health check: http://localhost:${PORT}/api/status`);
     console.log(`👨‍💼 Admin panel: http://localhost:${PORT}/admin`);
+    console.log(`🤖 Webhook setup: http://localhost:${PORT}/setup-webhook`);
+    console.log(`🔍 Webhook info: http://localhost:${PORT}/webhook-info`);
 });
 
 module.exports = app;
