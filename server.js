@@ -299,7 +299,85 @@ app.post('/api/telegram-webhook', async (req, res) => {
         res.status(200).send('OK');
     }
 });
+// Telegram webhook for direct replies
+app.post('/api/telegram-webhook', async (req, res) => {
+    try {
+        console.log('📨 Received Telegram webhook');
+        
+        const update = req.body;
+        console.log('Update:', JSON.stringify(update, null, 2));
+        
+        // Всегда отвечаем OK Telegramу сразу
+        res.status(200).send('OK');
+        
+        if (update.message && update.message.text) {
+            const messageText = update.message.text;
+            const chatId = update.message.chat.id.toString();
+            const targetChatId = TELEGRAM_CHAT_ID.replace('-', '');
 
+            console.log('💬 Message:', messageText);
+            console.log('👥 Chat ID:', chatId, 'Target:', targetChatId);
+
+            // Проверяем что сообщение из нужного чата
+            if (chatId !== targetChatId) {
+                console.log('❌ Ignoring message from wrong chat:', chatId);
+                return;
+            }
+
+            // Обрабатываем команду /reply_
+            if (messageText.startsWith('/reply_')) {
+                const parts = messageText.split(' ');
+                if (parts.length < 2) {
+                    console.log('❌ Invalid command format');
+                    return;
+                }
+
+                const userId = parts[0].replace('/reply_', '');
+                const replyText = parts.slice(1).join(' ').trim();
+
+                console.log('🎯 Parsed - User:', userId, 'Text:', replyText);
+
+                if (userId && replyText) {
+                    // Save the reply
+                    if (!messageStorage.has(userId)) {
+                        messageStorage.set(userId, []);
+                    }
+
+                    const userMessages = messageStorage.get(userId);
+                    userMessages.push({
+                        text: replyText,
+                        from: 'bot',
+                        timestamp: new Date().toISOString(),
+                        displayed: false
+                    });
+
+                    console.log('💾 Reply saved for user:', userId);
+
+                    // Send confirmation to Telegram
+                    try {
+                        await axios.post(
+                            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+                            {
+                                chat_id: TELEGRAM_CHAT_ID,
+                                text: `✅ Ответ сохранен для пользователя ${userId}`,
+                                parse_mode: 'HTML'
+                            },
+                            { timeout: 5000 }
+                        );
+                        console.log('📤 Confirmation sent to Telegram');
+                    } catch (error) {
+                        console.error('❌ Error sending confirmation:', error.message);
+                    }
+                }
+            }
+        }
+        
+    } catch (error) {
+        console.error('❌ Error in webhook:', error.message);
+        // Всегда отвечаем OK даже при ошибке
+        res.status(200).send('OK');
+    }
+});
 // Setup webhook endpoint - для ручной настройки webhook
 app.get('/setup-webhook', async (req, res) => {
     try {
