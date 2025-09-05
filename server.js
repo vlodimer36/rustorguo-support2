@@ -314,6 +314,125 @@ app.use('*', (req, res) => {
     });
 });
 
+// Setup webhook endpoint - для ручной настройки webhook
+app.get('/setup-webhook', async (req, res) => {
+    try {
+        console.log('🔄 Setting up Telegram webhook manually...');
+        
+        const response = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook`,
+            {
+                url: `https://rustorguo-support.onrender.com/api/telegram-webhook`,
+                allowed_updates: ['message', 'edited_message'],
+                drop_pending_updates: true
+            },
+            { 
+                timeout: 10000,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        
+        console.log('✅ Webhook set successfully:', response.data);
+        
+        // Проверяем статус webhook
+        const webhookInfo = await axios.get(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo`
+        );
+        
+        res.json({
+            success: true,
+            message: 'Webhook configured successfully',
+            webhook: webhookInfo.data,
+            setup: response.data
+        });
+        
+    } catch (error) {
+        console.error('❌ Error setting webhook:', error.message);
+        
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: error.response?.data || 'No response details'
+        });
+    }
+});
+
+// Get webhook info endpoint - для проверки статуса
+app.get('/webhook-info', async (req, res) => {
+    try {
+        const response = await axios.get(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo`
+        );
+        
+        res.json({
+            success: true,
+            webhook: response.data
+        });
+        
+    } catch (error) {
+        console.error('❌ Error getting webhook info:', error.message);
+        
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Test endpoint для проверки работы webhook
+app.get('/test-webhook', async (req, res) => {
+    try {
+        // Тестовая команда для проверки
+        const testResponse = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            {
+                chat_id: TELEGRAM_CHAT_ID,
+                text: '🤖 Webhook тест: сервер работает!',
+                parse_mode: 'HTML'
+            }
+        );
+        
+        res.json({
+            success: true,
+            message: 'Test message sent to Telegram',
+            data: testResponse.data
+        });
+        
+    } catch (error) {
+        console.error('❌ Test webhook error:', error.message);
+        
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Debug endpoint для отладки webhook
+app.post('/api/debug-webhook', (req, res) => {
+    try {
+        console.log('🐛 DEBUG Webhook received:');
+        console.log('Headers:', req.headers);
+        console.log('Body:', JSON.stringify(req.body, null, 2));
+        console.log('Timestamp:', new Date().toISOString());
+        
+        res.json({
+            success: true,
+            received: true,
+            body: req.body,
+            headers: req.headers
+        });
+        
+    } catch (error) {
+        console.error('Debug error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📡 Health check: http://localhost:${PORT}/api/status`);
