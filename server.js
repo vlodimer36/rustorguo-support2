@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const path = require('path'); // ← ДОБАВЬ ЭТУ СТРОЧКУ
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -288,6 +289,14 @@ app.post('/api/telegram-webhook', async (req, res) => {
     }
 });
 
+// Serve static files (admin.html) ← ДОБАВЬ ЭТОТ БЛОК
+app.use(express.static(path.join(__dirname)));
+
+// Serve admin.html from root ← ДОБАВЬ ЭТОТ БЛОК
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
 // Error handling
 app.use((error, req, res, next) => {
     console.error('Error:', error);
@@ -308,6 +317,7 @@ app.use('*', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📡 Health check: http://localhost:${PORT}/api/status`);
+    console.log(`👨‍💼 Admin panel: http://localhost:${PORT}/admin`);
 });
 
 module.exports = app;
